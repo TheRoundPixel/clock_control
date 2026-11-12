@@ -1,0 +1,63 @@
+name: Сборка APK
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: build
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+
+      - name: Собрать APK
+        working-directory: android
+        run: gradle assembleDebug --no-daemon --stacktrace
+
+      - name: Подготовить страницу скачивания
+        run: |
+          cp android/app/build/outputs/apk/debug/app-debug.apk RelayTimer.apk
+          mkdir -p public
+          cp site/index.html public/index.html
+          cp RelayTimer.apk public/RelayTimer.apk
+          sed -i "s/__BUILD_DATE__/$(TZ=Europe/Moscow date '+%d.%m.%Y %H:%M')/" public/index.html
+
+      # Страница для браузера: https://<имя>.github.io/<репозиторий>/
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: public
+      - id: deploy
+        uses: actions/deploy-pages@v4
+
+      - name: Опубликовать в Releases
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release delete latest --yes --cleanup-tag || true
+          sleep 3
+          gh release create latest RelayTimer.apk \
+            --target "${{ github.sha }}" \
+            --title "Таймер света — последняя сборка" \
+            --notes "Скачайте RelayTimer.apk и установите на телефон."

@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Таймер света — скачать приложение</title>
+<style>
+  body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; background: #eef1f5; color: #1f2937; }
+  main { max-width: 480px; margin: 0 auto; padding: 32px 20px 48px; }
+  .card { background: #fff; border-radius: 20px; padding: 28px 22px; box-shadow: 0 1px 3px rgba(0,0,0,.08); text-align: center; }
+  .icon { width: 96px; height: 96px; }
+  h1 { font-size: 28px; margin: 12px 0 4px; }
+  .sub { color: #6b7280; margin: 0 0 24px; }
+  .btn { display: block; background: #1e88e5; color: #fff; text-decoration: none; font-size: 20px; font-weight: 600;
+         padding: 18px; border-radius: 14px; }
+  .btn:active { background: #1565c0; }
+  .meta { color: #6b7280; font-size: 14px; margin-top: 10px; }
+  ol { text-align: left; line-height: 1.6; padding-left: 22px; margin: 24px 0 0; }
+  .note { font-size: 13px; color: #6b7280; margin-top: 18px; text-align: left; }
+</style>
+</head>
+<body>
+<main>
+  <div class="card">
+    <svg class="icon" viewBox="0 0 108 108" aria-hidden="true">
+      <circle cx="54" cy="54" r="50" fill="#1E88E5"/>
+      <path fill="#FFC107" d="M32,46 A22,22 0 1,1 76,46 C76,56 68,60 66,68 L42,68 C40,60 32,56 32,46 Z"/>
+      <path fill="#fff" d="M43,72 L65,72 L65,77 L43,77 Z M45,80 L63,80 L63,85 L45,85 Z"/>
+    </svg>
+    <h1>Таймер света</h1>
+    <p class="sub">Управление светом по расписанию через Bluetooth</p>
+    <a class="btn" href="RelayTimer.apk" download>Скачать приложение</a>
+    <div class="meta">Android · сборка от __BUILD_DATE__</div>
+    <ol>
+      <li>Нажмите «Скачать приложение» и откройте скачанный файл.</li>
+      <li>Разрешите установку из этого источника, если телефон спросит.</li>
+      <li>В настройках Bluetooth выполните сопряжение с <b>HC-06</b> (PIN 1234 или 0000).</li>
+      <li>Откройте «Таймер света» и нажмите «Подключить».</li>
+    </ol>
+    <p class="note">Новую версию можно ставить поверх старой, удалять приложение не нужно.
+      Предупреждение Play Защиты о неизвестном разработчике — это нормально.</p>
+  </div>
+</main>
+</body>
+</html>
