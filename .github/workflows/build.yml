@@ -20,9 +20,9 @@ jobs:
       name: github-pages
       url: ${{ steps.deploy.outputs.page_url }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
@@ -43,14 +43,6 @@ jobs:
           cp RelayTimer.apk public/RelayTimer.apk
           sed -i "s/__BUILD_DATE__/$(TZ=Europe/Moscow date '+%d.%m.%Y %H:%M')/" public/index.html
 
-      # Страница для браузера: https://<имя>.github.io/<репозиторий>/
-      - uses: actions/configure-pages@v5
-      - uses: actions/upload-pages-artifact@v3
-        with:
-          path: public
-      - id: deploy
-        uses: actions/deploy-pages@v4
-
       - name: Опубликовать в Releases
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -61,3 +53,11 @@ jobs:
             --target "${{ github.sha }}" \
             --title "Таймер света — последняя сборка" \
             --notes "Скачайте RelayTimer.apk и установите на телефон."
+
+      # Страница для браузера: https://<имя>.github.io/<репозиторий>/
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: public
+      - id: deploy
+        uses: actions/deploy-pages@v4
