@@ -274,16 +274,26 @@ public class MainActivity extends Activity {
     }
 
     private void runConnection(final int gen, BluetoothDevice dev) {
-        final BluetoothSocket s = openSocket(dev);
-        if (s == null || gen != connGen) {
-            closeQuietly(s);
+        final BluetoothSocket s;
+        try {
+            s = openSocket(gen, dev);
+        } catch (IOException | SecurityException e) {
             ui.post(() -> {
                 if (gen == connGen) {
                     connecting = false;
-                    setConnStatus("Не удалось подключиться к " + connName
-                            + ". Устройство включено и рядом?", C_RED);
+                    connBtn.setText("Подключить");
+                    setConnStatus("Не удалось подключиться к " + connName, C_RED);
+                    new AlertDialog.Builder(this)
+                            .setTitle("Ошибка Bluetooth")
+                            .setMessage(e.getMessage() == null ? e.toString() : e.getMessage())
+                            .setPositiveButton("OK", null)
+                            .show();
                 }
             });
+            return;
+        }
+        if (s == null || gen != connGen) {
+            closeQuietly(s);
             return;
         }
         final OutputStream out;
@@ -296,6 +306,7 @@ public class MainActivity extends Activity {
             ui.post(() -> {
                 if (gen == connGen) {
                     connecting = false;
+                    connBtn.setText("Подключить");
                     setConnStatus("Ошибка соединения", C_RED);
                 }
             });
@@ -310,27 +321,41 @@ public class MainActivity extends Activity {
         readLoop(gen, in);
     }
 
-    private BluetoothSocket openSocket(BluetoothDevice dev) {
-        BluetoothSocket s = null;
-        try {
-            s = dev.createRfcommSocketToServiceRecord(SPP);
-            s.connect();
-            return s;
-        } catch (IOException e) {
-            closeQuietly(s);
-        }
-        // Запасной способ — помогает с некоторыми HC-06 и телефонами
-        try {
-            Method m = dev.getClass().getMethod("createRfcommSocket", int.class);
-            s = (BluetoothSocket) m.invoke(dev, 1);
-            if (s != null) {
-                s.connect();
-                return s;
+    private BluetoothSocket openSocket(int gen, BluetoothDevice dev) throws IOException {
+        StringBuilder errors = new StringBuilder();
+        String[] modes = {"SPP", "SPP без аутентификации", "RFCOMM, канал 1"};
+        for (int attempt = 0; attempt < modes.length && gen == connGen; attempt++) {
+            BluetoothSocket candidate = null;
+            boolean opened = false;
+            try {
+                switch (attempt) {
+                    case 0:
+                        candidate = dev.createRfcommSocketToServiceRecord(SPP);
+                        break;
+                    case 1:
+                        candidate = dev.createInsecureRfcommSocketToServiceRecord(SPP);
+                        break;
+                    default:
+                        Method method = dev.getClass().getMethod("createRfcommSocket", int.class);
+                        candidate = (BluetoothSocket) method.invoke(dev, 1);
+                        break;
+                }
+                if (candidate == null) throw new IOException("Сокет не создан");
+                if (gen != connGen) return null;
+                candidate.connect();
+                opened = true;
+                return candidate;
+            } catch (IOException | ReflectiveOperationException e) {
+                Throwable cause = e instanceof java.lang.reflect.InvocationTargetException
+                        && e.getCause() != null ? e.getCause() : e;
+                if (errors.length() > 0) errors.append('\n');
+                errors.append(modes[attempt]).append(": ").append(cause);
+            } finally {
+                if (!opened) closeQuietly(candidate);
             }
-        } catch (Exception e) {
-            closeQuietly(s);
         }
-        return null;
+        if (gen != connGen) return null;
+        throw new IOException(errors.toString());
     }
 
     private void writerLoop(int gen, OutputStream out) {
