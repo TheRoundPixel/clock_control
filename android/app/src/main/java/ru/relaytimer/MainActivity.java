@@ -7,6 +7,12 @@ import android.app.AlertDialog;
 import android.app.TimePickerDialog;
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
+import android.bluetooth.BluetoothGatt;
+import android.bluetooth.BluetoothGattCallback;
+import android.bluetooth.BluetoothGattCharacteristic;
+import android.bluetooth.BluetoothGattDescriptor;
+import android.bluetooth.BluetoothGattService;
+import android.bluetooth.BluetoothProfile;
 import android.bluetooth.BluetoothManager;
 import android.bluetooth.BluetoothSocket;
 import android.content.Context;
@@ -37,6 +43,8 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import java.io.BufferedReader;
+import java.io.ByteArrayOutputStream;
+import java.util.Arrays;
 import java.io.Closeable;
 import java.io.IOException;
 import java.io.InputStream;
@@ -107,6 +115,7 @@ public class MainActivity extends Activity {
     private SharedPreferences prefs;
 
     // ---- соединение ----
+    private BleConnection ble;
     private volatile BluetoothSocket socket;
     private volatile int connGen = 0;
     private volatile boolean connected = false;
@@ -270,7 +279,11 @@ public class MainActivity extends Activity {
         connecting = true;
         setConnStatus("Подключение к " + connName + "…", C_LIGHT_ON);
         connBtn.setText("Отмена");
-        new Thread(() -> runConnection(gen, dev)).start();
+        if (dev.getType() == BluetoothDevice.DEVICE_TYPE_LE) {
+            connectBle(gen, dev, null);
+        } else {
+            new Thread(() -> runConnection(gen, dev)).start();
+        }
     }
 
     private void runConnection(final int gen, BluetoothDevice dev) {
@@ -279,15 +292,11 @@ public class MainActivity extends Activity {
             s = openSocket(gen, dev);
         } catch (IOException | SecurityException e) {
             ui.post(() -> {
-                if (gen == connGen) {
-                    connecting = false;
-                    connBtn.setText("Подключить");
-                    setConnStatus("Не удалось подключиться к " + connName, C_RED);
-                    new AlertDialog.Builder(this)
-                            .setTitle("Ошибка Bluetooth")
-                            .setMessage(e.getMessage() == null ? e.toString() : e.getMessage())
-                            .setPositiveButton("OK", null)
-                            .show();
+                if (gen != connGen) return;
+                if (dev.getType() == BluetoothDevice.DEVICE_TYPE_CLASSIC || e instanceof SecurityException) {
+                    showConnectionError(e.toString());
+                } else {
+                    connectBle(gen, dev, e.toString());
                 }
             });
             return;
@@ -369,7 +378,12 @@ public class MainActivity extends Activity {
                 // ждём конца ответа, чтобы не говорить одновременно с Arduino
                 ack.tryAcquire(3, TimeUnit.SECONDS);
             }
-        } catch (IOException | InterruptedException ignored) {
+        } catch (IOException | SecurityException e) {
+            ui.post(() -> {
+                if (gen == connGen && ble != null) ble.fail(e.getMessage());
+            });
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
         }
     }
 
@@ -378,19 +392,208 @@ public class MainActivity extends Activity {
             BufferedReader r = new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8));
             String line;
             while ((line = r.readLine()) != null) {
-                int k = line.indexOf('#');
-                if (k < 0) continue;
-                final String l = line.substring(k).trim();
-                if (l.equals("#E")) ack.release();
-                ui.post(() -> {
-                    if (gen == connGen) handleLine(l);
-                });
+                receiveLine(gen, line);
             }
         } catch (IOException ignored) {
         }
         ui.post(() -> {
             if (gen == connGen) onConnectionLost();
         });
+    }
+
+    private void receiveLine(int gen, String line) {
+        if (gen != connGen) return;
+        int start = line.indexOf('#');
+        if (start < 0) return;
+        String message = line.substring(start).trim();
+        if (message.equals("#E")) ack.release();
+        ui.post(() -> {
+            if (gen == connGen) handleLine(message);
+        });
+    }
+
+    private void showConnectionError(String message) {
+        disconnect();
+        setConnStatus("Не удалось подключиться к " + connName, C_RED);
+        new AlertDialog.Builder(this)
+                .setTitle("Ошибка Bluetooth")
+                .setMessage(message)
+                .setPositiveButton("OK", null)
+                .show();
+    }
+
+    private static UUID bleUuid(String shortId) {
+        return UUID.fromString("0000" + shortId + "-0000-1000-8000-00805f9b34fb");
+    }
+
+    private void connectBle(int gen, BluetoothDevice dev, String classicError) {
+        ble = new BleConnection(gen, classicError);
+        try {
+            ble.gatt = dev.connectGatt(this, false, ble, BluetoothDevice.TRANSPORT_LE);
+            if (ble.gatt == null) {
+                ble.fail("Android не открыл GATT");
+                return;
+            }
+            ui.postDelayed(ble.timeout, 12000);
+        } catch (SecurityException e) {
+            ble.fail(e.toString());
+        }
+    }
+
+    private final class BleConnection extends BluetoothGattCallback {
+        private final int gen;
+        private final String classicError;
+        private final Runnable timeout = () -> fail("истекло время настройки GATT");
+        private final Semaphore writeDone = new Semaphore(0);
+        private final ByteArrayOutputStream line = new ByteArrayOutputStream();
+        private BluetoothGatt gatt;
+        private BluetoothGattCharacteristic tx;
+        private volatile int writeStatus;
+        private boolean dropLine;
+
+        BleConnection(int gen, String classicError) {
+            this.gen = gen;
+            this.classicError = classicError;
+        }
+
+        @Override
+        public void onConnectionStateChange(BluetoothGatt client, int status, int state) {
+            ui.post(() -> {
+                if (ble != this) return;
+                if (status != BluetoothGatt.GATT_SUCCESS || state == BluetoothProfile.STATE_DISCONNECTED) {
+                    fail("GATT отключён, код " + status);
+                } else if (state == BluetoothProfile.STATE_CONNECTED && !client.discoverServices()) {
+                    fail("не удалось запустить поиск сервисов");
+                }
+            });
+        }
+
+        @Override
+        public void onServicesDiscovered(BluetoothGatt client, int status) {
+            ui.post(() -> {
+                if (ble != this) return;
+                if (status != BluetoothGatt.GATT_SUCCESS) {
+                    fail("поиск сервисов, код " + status);
+                    return;
+                }
+                BluetoothGattService service = client.getService(bleUuid("ffe0"));
+                BluetoothGattCharacteristic rx = service == null ? null : service.getCharacteristic(bleUuid("ffe1"));
+                tx = service == null ? null : service.getCharacteristic(bleUuid("ffe2"));
+                if (rx == null || tx == null
+                        || (rx.getProperties() & BluetoothGattCharacteristic.PROPERTY_NOTIFY) == 0
+                        || (tx.getProperties() & BluetoothGattCharacteristic.PROPERTY_WRITE) == 0) {
+                    fail("не найден интерфейс FFE0/FFE1/FFE2");
+                    return;
+                }
+                BluetoothGattDescriptor cccd = rx.getDescriptor(bleUuid("2902"));
+                if (cccd == null || !client.setCharacteristicNotification(rx, true)
+                        || !enableNotifications(client, cccd)) {
+                    fail("не удалось включить уведомления FFE1");
+                }
+            });
+        }
+
+        @SuppressWarnings("deprecation")
+        private boolean enableNotifications(BluetoothGatt client, BluetoothGattDescriptor cccd) {
+            byte[] value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE;
+            if (Build.VERSION.SDK_INT >= 33) return client.writeDescriptor(cccd, value) == 0;
+            return cccd.setValue(value) && client.writeDescriptor(cccd);
+        }
+
+        @Override
+        public void onDescriptorWrite(BluetoothGatt client, BluetoothGattDescriptor descriptor, int status) {
+            ui.post(() -> {
+                if (ble != this || !connecting) return;
+                if (status != BluetoothGatt.GATT_SUCCESS) {
+                    fail("подписка FFE1, код " + status);
+                    return;
+                }
+                ui.removeCallbacks(timeout);
+                onConnected();
+                new Thread(() -> writerLoop(gen, new OutputStream() {
+                    @Override
+                    public void write(int value) throws IOException {
+                        write(new byte[]{(byte) value});
+                    }
+
+                    @Override
+                    public void write(byte[] bytes) throws IOException {
+                        writeCommand(client, bytes);
+                    }
+                })).start();
+            });
+        }
+
+        @SuppressWarnings("deprecation")
+        private void writeCommand(BluetoothGatt client, byte[] bytes) throws IOException {
+            for (int offset = 0; offset < bytes.length; offset += 20) {
+                byte[] chunk = Arrays.copyOfRange(bytes, offset, Math.min(bytes.length, offset + 20));
+                if (gen != connGen) throw new IOException("BLE отключён");
+                writeDone.drainPermits();
+                int type = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT;
+                boolean started;
+                if (Build.VERSION.SDK_INT >= 33) {
+                    started = client.writeCharacteristic(tx, chunk, type) == 0;
+                } else {
+                    tx.setWriteType(type);
+                    started = tx.setValue(chunk) && client.writeCharacteristic(tx);
+                }
+                try {
+                    if (!started || !writeDone.tryAcquire(4, TimeUnit.SECONDS)
+                            || writeStatus != BluetoothGatt.GATT_SUCCESS) {
+                        throw new IOException("не удалось записать данные в FFE2");
+                    }
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new IOException(e);
+                }
+            }
+        }
+
+        @Override
+        public void onCharacteristicWrite(BluetoothGatt client, BluetoothGattCharacteristic characteristic, int status) {
+            writeStatus = status;
+            writeDone.release();
+        }
+
+        @Override
+        public void onCharacteristicChanged(BluetoothGatt client, BluetoothGattCharacteristic characteristic, byte[] value) {
+            receiveBytes(value);
+        }
+
+        @Override
+        @SuppressWarnings("deprecation")
+        public void onCharacteristicChanged(BluetoothGatt client, BluetoothGattCharacteristic characteristic) {
+            receiveBytes(characteristic.getValue());
+        }
+
+        private synchronized void receiveBytes(byte[] value) {
+            if (gen != connGen || value == null) return;
+            for (byte b : value) {
+                if (b == 10 || b == 13) {
+                    if (!dropLine && line.size() > 0) {
+                        receiveLine(gen, new String(line.toByteArray(), StandardCharsets.UTF_8));
+                    }
+                    line.reset();
+                    dropLine = false;
+                } else if (line.size() == 512) {
+                    dropLine = true;
+                } else {
+                    line.write(b);
+                }
+            }
+        }
+
+        private void fail(String detail) {
+            if (ble != this) return;
+            String message = "BLE: " + detail;
+            showConnectionError(classicError == null ? message : message + "\n" + classicError);
+        }
+
+        private void close() {
+            ui.removeCallbacks(timeout);
+            if (gatt != null) gatt.close();
+        }
     }
 
     private void onConnected() {
@@ -414,6 +617,11 @@ public class MainActivity extends Activity {
 
     private void disconnect() {
         connGen++;
+        if (ble != null) {
+            BleConnection closing = ble;
+            ble = null;
+            closing.close();
+        }
         connected = false;
         connecting = false;
         closeQuietly(socket);
